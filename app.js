@@ -136,18 +136,100 @@ function canCurrentPlayerMove() {
   return game.current === game.playerColor;
 }
 
+function getNeighbors(x, y) {
+  return [
+    { x: x - 1, y },
+    { x: x + 1, y },
+    { x, y: y - 1 },
+    { x, y: y + 1 },
+  ].filter((pos) => pos.x >= 0 && pos.x < SIZE && pos.y >= 0 && pos.y < SIZE);
+}
+
+function collectGroup(board, x, y) {
+  const color = board[y][x];
+  const stack = [{ x, y }];
+  const visited = new Set([`${x},${y}`]);
+  const group = [];
+
+  while (stack.length) {
+    const point = stack.pop();
+    group.push(point);
+    const neighbors = getNeighbors(point.x, point.y);
+    for (const next of neighbors) {
+      if (board[next.y][next.x] !== color) continue;
+      const key = `${next.x},${next.y}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      stack.push(next);
+    }
+  }
+
+  return group;
+}
+
+function countLiberties(board, group) {
+  const liberties = new Set();
+  for (const point of group) {
+    const neighbors = getNeighbors(point.x, point.y);
+    for (const next of neighbors) {
+      if (board[next.y][next.x] === 0) {
+        liberties.add(`${next.x},${next.y}`);
+      }
+    }
+  }
+  return liberties.size;
+}
+
+function removeGroup(board, group) {
+  for (const point of group) {
+    board[point.y][point.x] = 0;
+  }
+}
+
+function cloneBoard(board) {
+  return board.map((row) => row.slice());
+}
+
+function applyMove(board, x, y, color) {
+  if (board[y][x] !== 0) return { ok: false, captured: 0 };
+
+  board[y][x] = color;
+  const opponent = color === 1 ? 2 : 1;
+  let captured = 0;
+
+  const neighbors = getNeighbors(x, y);
+  for (const next of neighbors) {
+    if (board[next.y][next.x] !== opponent) continue;
+    const enemyGroup = collectGroup(board, next.x, next.y);
+    if (countLiberties(board, enemyGroup) === 0) {
+      captured += enemyGroup.length;
+      removeGroup(board, enemyGroup);
+    }
+  }
+
+  const selfGroup = collectGroup(board, x, y);
+  if (countLiberties(board, selfGroup) === 0) {
+    board[y][x] = 0;
+    return { ok: false, captured: 0 };
+  }
+
+  return { ok: true, captured };
+}
+
 function placeStone(x, y) {
   if (game.locked || !canCurrentPlayerMove()) return;
-  if (game.board[y][x] !== 0) {
-    updateStatus('该位置已有棋子，请重新落子。');
+  const moveResult = applyMove(game.board, x, y, game.current);
+  if (!moveResult.ok) {
+    updateStatus('该位置不能落子（可能已被占用或会自杀）。');
     return;
   }
 
-  game.board[y][x] = game.current;
   game.passes = 0;
+  const movedColor = game.current;
   game.current = game.current === 1 ? 2 : 1;
   draw();
-  updateStatus(`落子成功，轮到${game.current === 1 ? '黑' : '白'}方。`);
+  const captureText = moveResult.captured > 0 ? `，提子 ${moveResult.captured} 颗` : '';
+  updateStatus(`${movedColor === 1 ? '黑' : '白'}方落子成功${captureText}，轮到${game.current === 1 ? '黑' : '白'}方。`);
   syncRoomState();
 
   if (game.mode === 'ai' && game.current === 2) {
@@ -160,22 +242,36 @@ function aiMove() {
   const options = [];
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
-      if (game.board[y][x] === 0) options.push({ x, y });
+      if (game.board[y][x] !== 0) continue;
+      const boardCopy = cloneBoard(game.board);
+      const result = applyMove(boardCopy, x, y, 2);
+      if (result.ok) options.push({ x, y, captured: result.captured });
     }
   }
 
   if (!options.length) {
-    updateStatus('棋盘已满，对局结束。');
-    game.locked = true;
+    game.passes += 1;
+    game.current = 1;
+    game.locked = false;
+    if (game.passes >= 2) {
+      game.locked = true;
+      updateStatus('AI 无合法落子且双方连续停一手，对局结束（未计算目数）。');
+    } else {
+      updateStatus('AI 无合法落子，停一手。轮到黑方。');
+    }
+    syncRoomState();
     return;
   }
 
   const choice = options[Math.floor(Math.random() * options.length)];
-  game.board[choice.y][choice.x] = 2;
+  applyMove(game.board, choice.x, choice.y, 2);
+  game.passes = 0;
   game.current = 1;
   game.locked = false;
   draw();
-  updateStatus(`AI 落子 (${choice.x + 1}, ${choice.y + 1})，轮到黑方。`);
+  const captureText = choice.captured > 0 ? `，提子 ${choice.captured} 颗` : '';
+  updateStatus(`AI 落子 (${choice.x + 1}, ${choice.y + 1})${captureText}，轮到黑方。`);
+  syncRoomState();
 }
 
 function pass() {
