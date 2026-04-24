@@ -12,6 +12,9 @@ const hostControls = document.getElementById('host-controls');
 const joinControls = document.getElementById('join-controls');
 const roomCodeOutput = document.getElementById('room-code-output');
 const joinStatus = document.getElementById('join-status');
+const gameMinutesInput = document.getElementById('game-minutes');
+const moveSecondsInput = document.getElementById('move-seconds');
+const timersEl = document.getElementById('timers');
 
 const game = {
   mode: null, // ai | local | room
@@ -22,6 +25,13 @@ const game = {
   board: createBoard(),
   passes: 0,
   locked: false,
+  finished: false,
+  totalLimitMs: 20 * 60 * 1000,
+  moveLimitMs: 30 * 1000,
+  totalRemainingMs: 20 * 60 * 1000,
+  moveRemainingMs: 30 * 1000,
+  timerTickId: null,
+  lastTickAt: 0,
 };
 
 function createBoard() {
@@ -33,7 +43,13 @@ function resetBoard() {
   game.current = 1;
   game.passes = 0;
   game.locked = false;
+  game.finished = false;
+  applyTimeSettings();
+  game.totalRemainingMs = game.totalLimitMs;
+  game.moveRemainingMs = game.moveLimitMs;
+  startTimers();
   draw();
+  updateTimersDisplay();
   updateStatus('新对局已开始，黑先。');
   syncRoomState();
 }
@@ -131,23 +147,243 @@ function updateStatus(text) {
 }
 
 function canCurrentPlayerMove() {
-  if (!game.mode) return false;
+  if (!game.mode || game.finished) return false;
   if (game.mode !== 'room') return true;
   return game.current === game.playerColor;
 }
 
+function applyTimeSettings() {
+  const gameMinutes = Number(gameMinutesInput.value);
+  const moveSeconds = Number(moveSecondsInput.value);
+  const safeMinutes = Number.isFinite(gameMinutes) ? Math.min(Math.max(gameMinutes, 1), 180) : 20;
+  const safeSeconds = Number.isFinite(moveSeconds) ? Math.min(Math.max(moveSeconds, 5), 600) : 30;
+  gameMinutesInput.value = safeMinutes;
+  moveSecondsInput.value = safeSeconds;
+  game.totalLimitMs = safeMinutes * 60 * 1000;
+  game.moveLimitMs = safeSeconds * 1000;
+}
+
+function formatTime(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function updateTimersDisplay() {
+  timersEl.textContent = `总时间：${formatTime(game.totalRemainingMs)} ｜ 当前手剩余：${formatTime(game.moveRemainingMs)} (${game.current === 1 ? '黑' : '白'})`;
+}
+
+function stopTimers() {
+  if (game.timerTickId) {
+    clearInterval(game.timerTickId);
+    game.timerTickId = null;
+  }
+}
+
+function startTimers() {
+  stopTimers();
+  game.lastTickAt = Date.now();
+  game.timerTickId = setInterval(() => {
+    if (game.finished || !game.mode) return;
+    const now = Date.now();
+    const elapsed = now - game.lastTickAt;
+    game.lastTickAt = now;
+    game.totalRemainingMs = Math.max(0, game.totalRemainingMs - elapsed);
+    game.moveRemainingMs = Math.max(0, game.moveRemainingMs - elapsed);
+    updateTimersDisplay();
+
+    if (game.moveRemainingMs === 0) {
+      const loser = game.current;
+      const winner = loser === 1 ? 2 : 1;
+      endGame(`${loser === 1 ? '黑' : '白'}方超时负，${winner === 1 ? '黑' : '白'}方胜。`);
+      return;
+    }
+
+    if (game.totalRemainingMs === 0) {
+      finishByScoring('对局总时长结束，自动数目完成。');
+    }
+  }, 200);
+}
+
+function getNeighbors(x, y) {
+  return [
+    { x: x - 1, y },
+    { x: x + 1, y },
+    { x, y: y - 1 },
+    { x, y: y + 1 },
+  ].filter((pos) => pos.x >= 0 && pos.x < SIZE && pos.y >= 0 && pos.y < SIZE);
+}
+
+function collectGroup(board, x, y) {
+  const color = board[y][x];
+  const stack = [{ x, y }];
+  const visited = new Set([`${x},${y}`]);
+  const group = [];
+
+  while (stack.length) {
+    const point = stack.pop();
+    group.push(point);
+    const neighbors = getNeighbors(point.x, point.y);
+    for (const next of neighbors) {
+      if (board[next.y][next.x] !== color) continue;
+      const key = `${next.x},${next.y}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      stack.push(next);
+    }
+  }
+
+  return group;
+}
+
+function countLiberties(board, group) {
+  const liberties = new Set();
+  for (const point of group) {
+    const neighbors = getNeighbors(point.x, point.y);
+    for (const next of neighbors) {
+      if (board[next.y][next.x] === 0) {
+        liberties.add(`${next.x},${next.y}`);
+      }
+    }
+  }
+  return liberties.size;
+}
+
+function removeGroup(board, group) {
+  for (const point of group) {
+    board[point.y][point.x] = 0;
+  }
+}
+
+function cloneBoard(board) {
+  return board.map((row) => row.slice());
+}
+
+function applyMove(board, x, y, color) {
+  if (board[y][x] !== 0) return { ok: false, captured: 0 };
+
+  board[y][x] = color;
+  const opponent = color === 1 ? 2 : 1;
+  let captured = 0;
+
+  const neighbors = getNeighbors(x, y);
+  for (const next of neighbors) {
+    if (board[next.y][next.x] !== opponent) continue;
+    const enemyGroup = collectGroup(board, next.x, next.y);
+    if (countLiberties(board, enemyGroup) === 0) {
+      captured += enemyGroup.length;
+      removeGroup(board, enemyGroup);
+    }
+  }
+
+  const selfGroup = collectGroup(board, x, y);
+  if (countLiberties(board, selfGroup) === 0) {
+    board[y][x] = 0;
+    return { ok: false, captured: 0 };
+  }
+
+  return { ok: true, captured };
+}
+
+function switchTurn() {
+  game.current = game.current === 1 ? 2 : 1;
+  game.moveRemainingMs = game.moveLimitMs;
+  game.lastTickAt = Date.now();
+  updateTimersDisplay();
+}
+
+function countScore(board) {
+  let blackStones = 0;
+  let whiteStones = 0;
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      if (board[y][x] === 1) blackStones += 1;
+      if (board[y][x] === 2) whiteStones += 1;
+    }
+  }
+
+  const visited = new Set();
+  let blackTerritory = 0;
+  let whiteTerritory = 0;
+
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      if (board[y][x] !== 0) continue;
+      const key = `${x},${y}`;
+      if (visited.has(key)) continue;
+
+      const stack = [{ x, y }];
+      const region = [];
+      const borders = new Set();
+      visited.add(key);
+
+      while (stack.length) {
+        const point = stack.pop();
+        region.push(point);
+        const neighbors = getNeighbors(point.x, point.y);
+        for (const next of neighbors) {
+          const nextStone = board[next.y][next.x];
+          if (nextStone === 0) {
+            const nextKey = `${next.x},${next.y}`;
+            if (!visited.has(nextKey)) {
+              visited.add(nextKey);
+              stack.push(next);
+            }
+          } else {
+            borders.add(nextStone);
+          }
+        }
+      }
+
+      if (borders.size === 1) {
+        if (borders.has(1)) blackTerritory += region.length;
+        if (borders.has(2)) whiteTerritory += region.length;
+      }
+    }
+  }
+
+  return {
+    black: blackStones + blackTerritory,
+    white: whiteStones + whiteTerritory,
+    blackStones,
+    whiteStones,
+    blackTerritory,
+    whiteTerritory,
+  };
+}
+
+function endGame(message) {
+  game.finished = true;
+  game.locked = true;
+  stopTimers();
+  updateTimersDisplay();
+  updateStatus(message);
+  syncRoomState();
+}
+
+function finishByScoring(prefix = '对局结束，自动数目完成。') {
+  const score = countScore(game.board);
+  let winnerText = '平局';
+  if (score.black > score.white) winnerText = '黑方胜';
+  if (score.white > score.black) winnerText = '白方胜';
+  endGame(`${prefix} 黑 ${score.black}（子${score.blackStones}+地${score.blackTerritory}）｜白 ${score.white}（子${score.whiteStones}+地${score.whiteTerritory}），${winnerText}。`);
+}
+
 function placeStone(x, y) {
   if (game.locked || !canCurrentPlayerMove()) return;
-  if (game.board[y][x] !== 0) {
-    updateStatus('该位置已有棋子，请重新落子。');
+  const moveResult = applyMove(game.board, x, y, game.current);
+  if (!moveResult.ok) {
+    updateStatus('该位置不能落子（可能已被占用或会自杀）。');
     return;
   }
 
-  game.board[y][x] = game.current;
   game.passes = 0;
-  game.current = game.current === 1 ? 2 : 1;
+  const movedColor = game.current;
+  switchTurn();
   draw();
-  updateStatus(`落子成功，轮到${game.current === 1 ? '黑' : '白'}方。`);
+  const captureText = moveResult.captured > 0 ? `，提子 ${moveResult.captured} 颗` : '';
+  updateStatus(`${movedColor === 1 ? '黑' : '白'}方落子成功${captureText}，轮到${game.current === 1 ? '黑' : '白'}方。`);
   syncRoomState();
 
   if (game.mode === 'ai' && game.current === 2) {
@@ -160,29 +396,45 @@ function aiMove() {
   const options = [];
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
-      if (game.board[y][x] === 0) options.push({ x, y });
+      if (game.board[y][x] !== 0) continue;
+      const boardCopy = cloneBoard(game.board);
+      const result = applyMove(boardCopy, x, y, 2);
+      if (result.ok) options.push({ x, y, captured: result.captured });
     }
   }
 
   if (!options.length) {
-    updateStatus('棋盘已满，对局结束。');
-    game.locked = true;
+    game.passes += 1;
+    game.current = 1;
+    game.moveRemainingMs = game.moveLimitMs;
+    game.lastTickAt = Date.now();
+    game.locked = false;
+    if (game.passes >= 2) {
+      finishByScoring('AI 无合法落子且双方连续停一手。');
+    } else {
+      updateStatus('AI 无合法落子，停一手。轮到黑方。');
+      updateTimersDisplay();
+    }
+    syncRoomState();
     return;
   }
 
   const choice = options[Math.floor(Math.random() * options.length)];
-  game.board[choice.y][choice.x] = 2;
-  game.current = 1;
+  applyMove(game.board, choice.x, choice.y, 2);
+  game.passes = 0;
+  switchTurn();
   game.locked = false;
   draw();
-  updateStatus(`AI 落子 (${choice.x + 1}, ${choice.y + 1})，轮到黑方。`);
+  const captureText = choice.captured > 0 ? `，提子 ${choice.captured} 颗` : '';
+  updateStatus(`AI 落子 (${choice.x + 1}, ${choice.y + 1})${captureText}，轮到黑方。`);
+  syncRoomState();
 }
 
 function pass() {
   if (!canCurrentPlayerMove()) return;
   game.passes += 1;
   const currentColor = game.current;
-  game.current = game.current === 1 ? 2 : 1;
+  switchTurn();
   updateStatus(`${currentColor === 1 ? '黑' : '白'}方停一手。`);
   syncRoomState();
   if (game.mode === 'ai' && game.current === 2) {
@@ -190,8 +442,7 @@ function pass() {
     setTimeout(aiMove, 280);
   }
   if (game.passes >= 2) {
-    game.locked = true;
-    updateStatus('双方连续停一手，对局结束（未计算目数）。');
+    finishByScoring('双方连续停一手。');
   }
 }
 
@@ -210,6 +461,9 @@ function saveRoomState() {
     board: game.board,
     current: game.current,
     passes: game.passes,
+    totalRemainingMs: game.totalRemainingMs,
+    moveRemainingMs: game.moveRemainingMs,
+    finished: game.finished,
     updatedAt: Date.now(),
   };
   localStorage.setItem(ROOM_PREFIX + game.roomCode, JSON.stringify(payload));
@@ -237,7 +491,12 @@ window.addEventListener('storage', (event) => {
   game.board = state.board;
   game.current = state.current;
   game.passes = state.passes;
+  game.totalRemainingMs = state.totalRemainingMs ?? game.totalLimitMs;
+  game.moveRemainingMs = state.moveRemainingMs ?? game.moveLimitMs;
+  game.finished = !!state.finished;
+  game.locked = game.finished;
   draw();
+  updateTimersDisplay();
   updateStatus(`房间已同步，轮到${game.current === 1 ? '黑' : '白'}方。`);
 });
 
@@ -281,13 +540,20 @@ document.getElementById('join-room').addEventListener('click', () => {
   game.board = state.board;
   game.current = state.current;
   game.passes = state.passes;
+  game.totalRemainingMs = state.totalRemainingMs ?? game.totalLimitMs;
+  game.moveRemainingMs = state.moveRemainingMs ?? game.moveLimitMs;
+  game.finished = !!state.finished;
+  game.locked = game.finished;
   draw();
+  updateTimersDisplay();
   joinStatus.textContent = `已加入房间：${code}`;
   updateStatus(`加入成功，你执白。轮到${game.current === 1 ? '黑' : '白'}方。`);
 });
 
 document.getElementById('restart').addEventListener('click', resetBoard);
 document.getElementById('pass').addEventListener('click', pass);
+gameMinutesInput.addEventListener('change', applyTimeSettings);
+moveSecondsInput.addEventListener('change', applyTimeSettings);
 
 boardCanvas.addEventListener('click', (event) => {
   const pos = toBoardPosition(event.clientX, event.clientY);
@@ -296,3 +562,4 @@ boardCanvas.addEventListener('click', (event) => {
 });
 
 draw();
+updateTimersDisplay();

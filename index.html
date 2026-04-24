@@ -36,6 +36,13 @@
       </section>
 
       <section class="panel game-info">
+        <div class="time-settings">
+          <label for="game-minutes">对局总时长（分钟）</label>
+          <input id="game-minutes" type="number" min="1" max="180" value="20" />
+          <label for="move-seconds">每手时长（秒）</label>
+          <input id="move-seconds" type="number" min="5" max="600" value="30" />
+        </div>
+        <p id="timers">总时间：--:-- ｜ 当前手剩余：--:--</p>
         <p id="status">请先选择模式开始。</p>
         <div class="buttons">
           <button id="pass">停一手</button>
