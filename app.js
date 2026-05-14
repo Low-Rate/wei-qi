@@ -461,6 +461,8 @@ function saveRoomState() {
     board: game.board,
     current: game.current,
     passes: game.passes,
+    totalLimitMs: game.totalLimitMs,
+    moveLimitMs: game.moveLimitMs,
     totalRemainingMs: game.totalRemainingMs,
     moveRemainingMs: game.moveRemainingMs,
     finished: game.finished,
@@ -491,6 +493,10 @@ window.addEventListener('storage', (event) => {
   game.board = state.board;
   game.current = state.current;
   game.passes = state.passes;
+  game.totalLimitMs = state.totalLimitMs ?? game.totalLimitMs;
+  game.moveLimitMs = state.moveLimitMs ?? game.moveLimitMs;
+  gameMinutesInput.value = Math.round(game.totalLimitMs / 60000);
+  moveSecondsInput.value = Math.round(game.moveLimitMs / 1000);
   game.totalRemainingMs = state.totalRemainingMs ?? game.totalLimitMs;
   game.moveRemainingMs = state.moveRemainingMs ?? game.moveLimitMs;
   game.finished = !!state.finished;
@@ -540,6 +546,10 @@ document.getElementById('join-room').addEventListener('click', () => {
   game.board = state.board;
   game.current = state.current;
   game.passes = state.passes;
+  game.totalLimitMs = state.totalLimitMs ?? game.totalLimitMs;
+  game.moveLimitMs = state.moveLimitMs ?? game.moveLimitMs;
+  gameMinutesInput.value = Math.round(game.totalLimitMs / 60000);
+  moveSecondsInput.value = Math.round(game.moveLimitMs / 1000);
   game.totalRemainingMs = state.totalRemainingMs ?? game.totalLimitMs;
   game.moveRemainingMs = state.moveRemainingMs ?? game.moveLimitMs;
   game.finished = !!state.finished;
