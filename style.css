@@ -62,6 +62,24 @@ input {
   padding: 8px;
 }
 
+.time-settings {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.time-settings input {
+  width: 90px;
+  margin-left: 0;
+}
+
+#timers {
+  margin: 6px 0 10px;
+  font-weight: 600;
+}
+
 .board-wrap {
   background: #d9b16f;
   border: 3px solid #b68948;
