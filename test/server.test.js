@@ -55,3 +55,20 @@ test('server expires a session whose authoritative move clock has elapsed', asyn
   assert.equal(result.body.session.state.finishedReason, 'move-timeout');
  } finally { await new Promise(r => server.close(r)); }
 });
+
+test('session resume list excludes completed games', async () => {
+ const server = http.createServer(handler); await new Promise(r => server.listen(0, r));
+ try {
+  const token = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '续局棋手' })).body.token;
+  const userId = JSON.parse(Buffer.from(token.split('.')[0], 'base64url').toString()).id;
+  const now = new Date().toISOString();
+  const state = finished => ({ board: Array.from({ length: 9 }, () => Array(9).fill(0)), current: 1, passes: finished ? 2 : 0, finished, totalRemainingMs: 60_000, moveRemainingMs: 30_000, turnStartedAt: now });
+  resetForTest({ rooms: {}, sessions: {
+   game_active: { id: 'game_active', roomId: 'room_active', boardSize: 9, players: { black: userId, white: 'other' }, state: state(false), createdAt: now, updatedAt: now },
+   game_finished: { id: 'game_finished', roomId: 'room_finished', boardSize: 9, players: { black: userId, white: 'other' }, state: state(true), createdAt: now, updatedAt: new Date(Date.now() + 1_000).toISOString() }
+  } });
+  const sessions = await request(server, 'GET', '/api/sessions', token);
+  assert.equal(sessions.status, 200);
+  assert.deepEqual(sessions.body.sessions.map(item => item.session.id), ['game_active']);
+ } finally { await new Promise(r => server.close(r)); }
+});
