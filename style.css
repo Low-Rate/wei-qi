@@ -92,3 +92,8 @@ input {
   margin: 0 auto;
   touch-action: none;
 }
+#create-room-form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+#create-room-form input, #create-room-form select { margin:0; }
+.room-item { border-top: 1px solid #e4d9bf; padding: 10px 0; }
+.room-item button, #applications button { margin-left: 8px; }
+#connection-status { margin-left: 10px; font-size: .9rem; }
