@@ -4,7 +4,18 @@ const game = { sessionId: null, color: null, boardSize: 19, state: null, timer: 
 let token = sessionStorage.getItem('weiqi-token'), stream;
 const $ = (s) => document.querySelector(s);
 function message(text, target = statusEl) { target.textContent = text; }
-function api(path, options = {}) { return fetch(path, { ...options, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...options.headers } }).then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error?.message || '请求失败'); return data; }); }
+async function jsonResponse(response) {
+ const text = await response.text();
+ let data = null;
+ if (text.trim()) {
+  try { data = JSON.parse(text); }
+  catch { throw new Error('服务器返回了无法读取的数据，请稍后重试。'); }
+ }
+ if (!response.ok) throw new Error(data?.error?.message || `请求失败（${response.status}）。`);
+ if (data === null) throw new Error('服务器未返回预期的数据，请稍后重试。');
+ return data;
+}
+function api(path, options = {}) { return fetch(path, { ...options, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...options.headers } }).then(jsonResponse); }
 function format(ms) { const s = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
 function displayedClock() { if (!game.state) return null; const elapsed = game.state.finished ? 0 : Math.max(0, Date.now() - new Date(game.state.turnStartedAt).getTime()); return { totalRemainingMs: Math.max(0, game.state.totalRemainingMs - elapsed), moveRemainingMs: Math.max(0, game.state.moveRemainingMs - elapsed) }; }
 function updateTimers() { const clock = displayedClock(); if (!clock) return; $('#timers').textContent=`总时间：${format(clock.totalRemainingMs)} ｜ 当前手剩余：${format(clock.moveRemainingMs)} (${game.state.current===1?'黑':'白'})`; }
@@ -21,7 +32,7 @@ async function loadApplications(roomId) { try { const { applications }=await api
 async function handleApplication(roomId, appId, action) { try { const result=await api(`/api/rooms/${roomId}/applications/${appId}/${action}`,{method:'POST',body:'{}'}); if(action==='approve') { renderGame(result.session, 1); $('#owner-applications').hidden=true; } else loadApplications(roomId); } catch(e){message(e.message);} }
 function connectEvents() { if(stream) stream.close(); stream=new EventSource(`/events?token=${encodeURIComponent(token)}`); stream.onopen=()=>$('#connection-status').textContent='实时连接已建立'; stream.onerror=()=>$('#connection-status').textContent='实时连接断开，正在重连…'; stream.addEventListener('room-list-changed',()=>loadRooms().catch(e=>message(e.message))); stream.addEventListener('application-arrived',e=>{const d=JSON.parse(e.data);message('收到新的加入申请。');loadApplications(d.roomId);}); stream.addEventListener('application-approved',e=>{const d=JSON.parse(e.data); api(`/api/sessions/${d.session.id}`).then(r=>renderGame(r.session,r.color));}); stream.addEventListener('application-rejected',()=>message('你的申请被拒绝，房间仍在招募中。',$('#lobby-status')));
  stream.addEventListener('game-state',e=>{const d=JSON.parse(e.data);if(d.session.id===game.sessionId) renderGame(d.session);}); }
-$('#sign-in').onclick=async()=>{try{const r=await fetch('/api/auth/anonymous',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nickname:$('#nickname').value})});const d=await r.json();if(!r.ok)throw new Error(d.error?.message);token=d.token;sessionStorage.setItem('weiqi-token',token);$('#identity').hidden=true;$('#lobby').hidden=false;connectEvents();loadRooms();restoreSessions().catch(e=>message(e.message));}catch(e){message(e.message);}};
+$('#sign-in').onclick=async()=>{try{const d=await jsonResponse(await fetch('/api/auth/anonymous',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nickname:$('#nickname').value})}));token=d.token;sessionStorage.setItem('weiqi-token',token);$('#identity').hidden=true;$('#lobby').hidden=false;connectEvents();loadRooms();restoreSessions().catch(e=>message(e.message));}catch(e){message(e.message);}};
 $('#create-room-form').onsubmit=async e=>{e.preventDefault();try{const room=(await api('/api/rooms',{method:'POST',body:JSON.stringify({title:$('#room-title').value,introduction:$('#room-introduction').value,boardSize:Number($('#board-size').value),timeSettings:{totalMinutes:Number($('#game-minutes').value),moveSeconds:Number($('#move-seconds').value)}})})).room;message(`房间已创建，正在招募：${room.title}`,$('#lobby-status'));loadApplications(room.id);}catch(err){message(err.message,$('#lobby-status'));}};
 canvas.onclick=async e=>{if(!game.state||game.state.finished)return;if(game.state.current!==game.color)return message('尚未轮到你落子。');const rect=canvas.getBoundingClientRect(),pad=20,cell=(canvas.width-pad*2)/(game.boardSize-1),x=Math.round((e.clientX-rect.left-pad)/(rect.width/canvas.width*cell)),y=Math.round((e.clientY-rect.top-pad)/(rect.height/canvas.height*cell));if(x<0||y<0||x>=game.boardSize||y>=game.boardSize||game.state.board[y][x])return message('该位置不能落子。');const state=structuredClone(game.state);if(!applyMove(state.board,x,y,game.color))return message('该位置是禁入点。');state.current=game.color===1?2:1;state.passes=0;try{await api(`/api/sessions/${game.sessionId}/state`,{method:'PUT',body:JSON.stringify({state})});}catch(err){message(err.message);}};
 $('#pass').onclick=async()=>{if(!game.state||game.state.current!==game.color)return;const state=structuredClone(game.state);state.current=game.color===1?2:1;state.passes++;try{await api(`/api/sessions/${game.sessionId}/state`,{method:'PUT',body:JSON.stringify({state})});}catch(e){message(e.message);}};
