@@ -53,6 +53,7 @@ test('server expires a session whose authoritative move clock has elapsed', asyn
   assert.equal(result.status, 200);
   assert.equal(result.body.session.state.finished, true);
   assert.equal(result.body.session.state.finishedReason, 'move-timeout');
+  assert.equal(result.body.session.state.winner, 2);
  } finally { await new Promise(r => server.close(r)); }
 });
 
@@ -93,6 +94,39 @@ test('a player can resign and the opponent is recorded as winner', async () => {
   assert.equal(resigned.body.session.state.winner, 1);
   const secondResign = await request(server, 'POST', `/api/sessions/${sessionId}/resign`, black, {});
   assert.equal(secondResign.status, 409);
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+
+test('malformed bearer tokens return 401 instead of an internal error', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const result = await request(server, 'GET', '/api/rooms', 'not-a-valid.token.signature');
+  assert.equal(result.status, 401);
+  assert.equal(result.body.error.code, 'UNAUTHENTICATED');
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+test('a player can reapply after their previous application was rejected', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const host = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '房主' })).body.token;
+  const guest = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '客人' })).body.token;
+  const room = (await request(server, 'POST', '/api/rooms', host, { title: '重新申请', boardSize: 9, timeSettings: { totalMinutes: 20, moveSeconds: 30 } })).body.room;
+  const first = (await request(server, 'POST', `/api/rooms/${room.id}/applications`, guest, {})).body.application;
+  const rejected = await request(server, 'POST', `/api/rooms/${room.id}/applications/${first.id}/reject`, host, {});
+  assert.equal(rejected.status, 200);
+  const second = await request(server, 'POST', `/api/rooms/${room.id}/applications`, guest, {});
+  assert.equal(second.status, 201);
+  assert.equal(second.body.application.status, 'pending');
  } finally {
   await new Promise(resolve => server.close(resolve));
  }
