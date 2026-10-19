@@ -97,3 +97,8 @@ input {
 .room-item { border-top: 1px solid #e4d9bf; padding: 10px 0; }
 .room-item button, #applications button { margin-left: 8px; }
 #connection-status { margin-left: 10px; font-size: .9rem; }
+
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.danger { background: #a83232; }
+button:focus-visible, input:focus-visible, select:focus-visible, canvas:focus-visible { outline: 3px solid #3977c5; outline-offset: 2px; }
+@media (max-width: 640px) { .container { padding: 10px; } #board { width: 100%; height: auto; } #create-room-form > * { min-width: 0; max-width: 100%; } #nickname { max-width: 55vw; } }
