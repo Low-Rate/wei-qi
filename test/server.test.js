@@ -72,3 +72,28 @@ test('session resume list excludes completed games', async () => {
   assert.deepEqual(sessions.body.sessions.map(item => item.session.id), ['game_active']);
  } finally { await new Promise(r => server.close(r)); }
 });
+
+
+test('a player can resign and the opponent is recorded as winner', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const black = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '黑方' })).body.token;
+  const white = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '白方' })).body.token;
+  const room = (await request(server, 'POST', '/api/rooms', black, { title: '认输测试', boardSize: 9, timeSettings: { totalMinutes: 20, moveSeconds: 30 } })).body.room;
+  const application = (await request(server, 'POST', `/api/rooms/${room.id}/applications`, white, {})).body.application;
+  const created = await request(server, 'POST', `/api/rooms/${room.id}/applications/${application.id}/approve`, black, {});
+  const sessionId = created.body.session.id;
+  const resigned = await request(server, 'POST', `/api/sessions/${sessionId}/resign`, white, {});
+  assert.equal(resigned.status, 200);
+  assert.equal(resigned.body.session.state.finished, true);
+  assert.equal(resigned.body.session.state.finishedReason, 'resignation');
+  assert.equal(resigned.body.session.state.resignedBy, JSON.parse(Buffer.from(white.split('.')[0], 'base64url').toString()).id);
+  assert.equal(resigned.body.session.state.winner, 1);
+  const secondResign = await request(server, 'POST', `/api/sessions/${sessionId}/resign`, black, {});
+  assert.equal(secondResign.status, 409);
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
