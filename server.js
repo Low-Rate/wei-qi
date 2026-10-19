@@ -75,5 +75,10 @@ async function handler(req, res) {
 }
 function serveStatic(pathname, res) { const filename = STATIC_FILES.get(pathname); if (!filename) return error(res, 404, 'NOT_FOUND', '页面不存在。'); const file = path.join(__dirname, filename); const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html'; res.writeHead(200, { 'content-type': `${type}; charset=utf-8` }); fs.createReadStream(file).pipe(res); }
 ensureData();
+// Enforce clock expiry even when neither player sends another request.
+const timeoutSweep = setInterval(() => {
+ for (const session of Object.values(db.sessions)) persistTimeout(session);
+}, 1000);
+timeoutSweep.unref();
 if (require.main === module) http.createServer((req, res) => handler(req, res).catch(err => error(res, 400, err.message, '请求无法处理。'))).listen(PORT, () => console.log(`Wei Qi server listening on ${PORT}`));
 module.exports = { handler, resetForTest(data = { rooms: {}, sessions: {} }) { db = data; }, db };
