@@ -13,7 +13,17 @@ const STATIC_FILES = new Map([['/', 'index.html'], ['/index.html', 'index.html']
 let db = { rooms: {}, sessions: {} };
 
 function ensureData() { fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true }); if (fs.existsSync(DATA_FILE)) db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
-function save() { fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true }); fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); }
+function save() {
+ fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+ const tempFile = `${DATA_FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
+ try {
+  fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), { mode: 0o600 });
+  fs.renameSync(tempFile, DATA_FILE);
+ } catch (err) {
+  try { fs.unlinkSync(tempFile); } catch {}
+  throw err;
+ }
+}
 function id(prefix) { return `${prefix}_${crypto.randomUUID()}`; }
 function sign(payload) { const body = Buffer.from(JSON.stringify(payload)).toString('base64url'); return `${body}.${crypto.createHmac('sha256', SECRET).update(body).digest('base64url')}`; }
 function userFromToken(token) { if (!token) return null; try { const parts = token.split('.'); if (parts.length !== 2 || !parts[0] || !parts[1]) return null; const [body, signature] = parts; const expected = crypto.createHmac('sha256', SECRET).update(body).digest('base64url'); const actualBytes = Buffer.from(signature); const expectedBytes = Buffer.from(expected); if (actualBytes.length !== expectedBytes.length || !crypto.timingSafeEqual(actualBytes, expectedBytes)) return null; const user = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); return user && typeof user.id === 'string' && typeof user.exp === 'number' && user.exp > Date.now() ? user : null; } catch { return null; } }
