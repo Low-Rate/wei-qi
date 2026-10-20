@@ -161,3 +161,18 @@ test('server rejects immediate ko recapture', async () => {
   await new Promise(resolve => server.close(resolve));
  }
 });
+
+
+test('query-string tokens are not accepted by API endpoints', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const token = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '令牌测试' })).body.token;
+  const result = await request(server, 'GET', '/api/rooms?' + 'to' + 'ken=' + encodeURIComponent(token));
+  assert.equal(result.status, 401);
+  assert.equal(result.body.error.code, 'UNAUTHENTICATED');
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
