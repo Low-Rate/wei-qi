@@ -205,6 +205,41 @@ test('SSE clients receive subsequent room-list events', async () => {
 });
 
 
+
+test('an expired SSE token is rejected when reconnecting after disconnect', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const user = { id: 'usr_reconnect_expired', nickname: '断线重连测试', exp: Date.now() + 250 };
+  const body = Buffer.from(JSON.stringify(user)).toString('base64url');
+  const secret = process.env.AUTH_SECRET || 'replace-this-development-secret';
+  const signature = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+  const token = body + '.' + signature;
+  let received = '';
+  await new Promise((resolve, reject) => {
+   const timeout = setTimeout(() => reject(new Error('SSE connection did not open')), 1000);
+   stream = http.get({ port: server.address().port, path: '/events?token=' + encodeURIComponent(token) }, response => {
+    response.setEncoding('utf8');
+    response.on('data', chunk => {
+     received += chunk;
+     if (received.includes('event: connected')) { clearTimeout(timeout); resolve(); }
+    });
+   });
+   stream.on('error', err => { clearTimeout(timeout); reject(err); });
+  });
+  stream.destroy();
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, user.exp - Date.now() + 25)));
+  const reconnect = await request(server, 'GET', '/events?token=' + encodeURIComponent(token));
+  assert.equal(reconnect.status, 401);
+  assert.equal(reconnect.body.error.code, 'UNAUTHENTICATED');
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
 test('SSE connections close when their authentication token expires', async () => {
  resetForTest();
  const server = http.createServer(handler);
