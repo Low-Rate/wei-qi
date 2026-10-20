@@ -241,6 +241,39 @@ test('client returns to sign-in when token expires without an active SSE stream'
  assert.equal(getElement('#status').textContent, '登录已过期，请重新登录。');
 });
 
+
+test('client does not open SSE with an already-expired stored token', async () => {
+ const elements = new Map();
+ const getElement = selector => {
+  if (!elements.has(selector)) elements.set(selector, {
+   hidden: false, textContent: '', disabled: false, onclick: null, onsubmit: null,
+   replaceChildren() {}, append() {}, addEventListener() {},
+   getContext() { return {}; }
+  });
+  return elements.get(selector);
+ };
+ const storage = new Map();
+ let openedStreams = 0;
+ const context = vm.createContext({
+  document: { querySelector: getElement },
+  sessionStorage: {
+   getItem: key => storage.get(key) ?? null,
+   setItem: (key, value) => storage.set(key, value),
+   removeItem: key => storage.delete(key)
+  },
+  EventSource: function () { openedStreams++; this.close = () => {}; this.addEventListener = () => {}; },
+  atob, TextDecoder, Uint8Array, setTimeout, clearTimeout, Date, Math, JSON, console
+ });
+ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+ vm.runInContext(source, context, { filename: 'app.js' });
+ const payload = Buffer.from(JSON.stringify({ id: 'usr_already_expired', nickname: '过期用户', exp: Date.now() - 100 })).toString('base64url');
+ vm.runInContext("token = " + JSON.stringify(payload + '.signature') + "; sessionStorage.setItem('weiqi-token', token); connectEvents();", context);
+ assert.equal(openedStreams, 0);
+ assert.equal(storage.has('weiqi-token'), false);
+ assert.equal(getElement('#identity').hidden, false);
+ assert.equal(getElement('#lobby').hidden, true);
+});
+
 test('an expired SSE token is rejected when reconnecting after disconnect', async () => {
  resetForTest();
  const server = http.createServer(handler);
