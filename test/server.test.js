@@ -374,3 +374,17 @@ test('request errors destroy responses that already sent headers', () => {
  handleRequestError(expected, response);
  assert.equal(response.destroyedWith, expected);
 });
+
+test('oversized JSON request bodies are rejected with 413', async () => {
+ resetForTest();
+ const server = http.createServer((req, res) => handler(req, res).catch(err => handleRequestError(err, res)));
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const result = await request(server, 'POST', '/api/auth/anonymous', null, { nickname: 'x'.repeat(1024 * 1024) });
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error.code, 'REQUEST_TOO_LARGE');
+  assert.equal(result.body.error.message.includes('BODY_TOO_LARGE'), false);
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
