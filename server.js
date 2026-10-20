@@ -93,4 +93,4 @@ function handleRequestError(err, res) {
  error(res, 500, 'INTERNAL_ERROR', '服务器暂时无法处理请求。');
 }
 if (require.main === module) http.createServer((req, res) => handler(req, res).catch(err => handleRequestError(err, res))).listen(PORT, () => console.log(`Wei Qi server listening on ${PORT}`));
-module.exports = { handler, resetForTest(data = { rooms: {}, sessions: {} }) { db = data; }, db };
+module.exports = { handler, handleRequestError, resetForTest(data = { rooms: {}, sessions: {} }) { db = data; }, db };
