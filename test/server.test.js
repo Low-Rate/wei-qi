@@ -232,9 +232,9 @@ test('client returns to sign-in when token expires without an active SSE stream'
  });
  const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
  vm.runInContext(source, context, { filename: 'app.js' });
- const payload = Buffer.from(JSON.stringify({ id: 'usr_client_expiry', nickname: '过期用户', exp: Date.now() + 80 })).toString('base64url');
+ const payload = Buffer.from(JSON.stringify({ id: 'usr_client_expiry', nickname: '过期用户', exp: Date.now() + 300 })).toString('base64url');
  vm.runInContext("token = " + JSON.stringify(payload + '.signature') + "; sessionStorage.setItem('weiqi-token', token); scheduleAuthExpiry();", context);
- await new Promise(resolve => setTimeout(resolve, 180));
+ await new Promise(resolve => setTimeout(resolve, 450));
  assert.equal(storage.has('weiqi-token'), false);
  assert.equal(getElement('#identity').hidden, false);
  assert.equal(getElement('#lobby').hidden, true);
