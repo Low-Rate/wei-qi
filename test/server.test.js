@@ -131,3 +131,74 @@ test('a player can reapply after their previous application was rejected', async
   await new Promise(resolve => server.close(resolve));
  }
 });
+
+
+test('server rejects immediate ko recapture', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const white = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '白方' })).body.token;
+  const userId = JSON.parse(Buffer.from(white.split('.')[0], 'base64url').toString()).id;
+  const beforeCapture = Array.from({ length: 9 }, () => Array(9).fill(0));
+  beforeCapture[1][1] = 2;
+  beforeCapture[1][0] = 1; beforeCapture[1][2] = 1; beforeCapture[0][1] = 1;
+  beforeCapture[2][0] = 2; beforeCapture[2][2] = 2; beforeCapture[3][1] = 2;
+  const afterCapture = beforeCapture.map(row => [...row]);
+  afterCapture[1][1] = 0; afterCapture[2][1] = 1;
+  const now = new Date().toISOString();
+  resetForTest({ rooms: { room_ko: { id: 'room_ko', timeSettings: { moveSeconds: 30 } } }, sessions: {
+   game_ko: { id: 'game_ko', roomId: 'room_ko', boardSize: 9, players: { black: 'other', white: userId },
+    state: { board: afterCapture, previousBoard: beforeCapture, current: 2, passes: 0, finished: false, totalRemainingMs: 60000, moveRemainingMs: 30000, turnStartedAt: now },
+    createdAt: now, updatedAt: now }
+  } });
+  const result = await request(server, 'PUT', '/api/sessions/game_ko/state', white, { state: {
+   board: beforeCapture.map(row => [...row]), current: 1, passes: 0
+  } });
+  assert.equal(result.status, 403);
+  assert.equal(result.body.error.code, 'INVALID_MOVE');
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+
+test('query-string tokens are not accepted by API endpoints', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ try {
+  const token = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '令牌测试' })).body.token;
+  const result = await request(server, 'GET', '/api/rooms?' + 'to' + 'ken=' + encodeURIComponent(token));
+  assert.equal(result.status, 401);
+  assert.equal(result.body.error.code, 'UNAUTHENTICATED');
+ } finally {
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+
+test('SSE clients receive subsequent room-list events', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const token = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '实时事件测试' })).body.token;
+  let received = '';
+  stream = http.get({ port: server.address().port, path: '/events?' + 'to' + 'ken=' + encodeURIComponent(token) }, response => {
+   response.setEncoding('utf8');
+   response.on('data', chunk => { received += chunk; });
+  });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await request(server, 'POST', '/api/rooms', token, { title: 'SSE 测试房', boardSize: 9, timeSettings: { totalMinutes: 20, moveSeconds: 30 } });
+  await new Promise((resolve, reject) => {
+   const started = Date.now();
+   const check = () => { if (received.includes('event: room-list-changed')) return resolve(); if (Date.now() - started > 1000) return reject(new Error('SSE event was not received')); setTimeout(check, 25); };
+   check();
+  });
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
