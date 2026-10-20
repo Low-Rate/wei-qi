@@ -377,7 +377,7 @@ test('request errors destroy responses that already sent headers', () => {
 
 test('oversized JSON request bodies are rejected with 413', async () => {
  resetForTest();
- const server = http.createServer(handler);
+ const server = http.createServer((req, res) => handler(req, res).catch(err => handleRequestError(err, res)));
  await new Promise(resolve => server.listen(0, resolve));
  try {
   const result = await request(server, 'POST', '/api/auth/anonymous', null, { nickname: 'x'.repeat(1024 * 1024) });
