@@ -33,7 +33,33 @@ function broadcast(type, data, predicate = () => true) { const message = `event:
 function roomChanged(room) { broadcast('room-list-changed', { room: publicRoom(room) }); }
 function error(res, status, code, message) { json(res, status, { error: { code, message } }); }
 function json(res, status, payload) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(payload)); }
-function body(req) { return new Promise((resolve, reject) => { let raw = ''; req.on('data', c => raw += c); req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch { reject(new Error('INVALID_JSON')); } }); }); }
+const MAX_BODY_BYTES = 1024 * 1024;
+function body(req) {
+ return new Promise((resolve, reject) => {
+  let raw = '';
+  let size = 0;
+  let failed = false;
+  req.on('data', chunk => {
+   if (failed) return;
+   size += chunk.length;
+   if (size > MAX_BODY_BYTES) {
+    failed = true;
+    reject(new Error('BODY_TOO_LARGE'));
+    return;
+   }
+   raw += chunk;
+  });
+  req.on('end', () => {
+   if (failed) return;
+   try { resolve(raw ? JSON.parse(raw) : {}); } catch { failed = true; reject(new Error('INVALID_JSON')); }
+  });
+  req.on('error', err => {
+   if (failed) return;
+   failed = true;
+   reject(err);
+  });
+ });
+}
 function requireUser(req, res, url) { const user = actor(req, url); if (!user) { error(res, 401, 'UNAUTHENTICATED', '请先登录后再操作房间。'); return null; } return user; }
 function getRoom(roomId, res) { const room = db.rooms[roomId]; if (!room) { error(res, 404, 'ROOM_NOT_FOUND', '房间不存在或已被关闭。'); return null; } return room; }
 function authorizeOwner(room, user, res) { if (room.ownerId !== user.id) { error(res, 403, 'NOT_ROOM_OWNER', '只有房主可以处理本房间的申请。'); return false; } return true; }
@@ -99,6 +125,10 @@ function handleRequestError(err, res) {
  }
  if (err && err.message === 'INVALID_JSON') {
   error(res, 400, 'INVALID_JSON', '请求内容必须是合法的 JSON。');
+  return;
+ }
+ if (err && err.message === 'BODY_TOO_LARGE') {
+  error(res, 413, 'REQUEST_TOO_LARGE', '请求内容过大，请缩小后重试。');
   return;
  }
  console.error('Unhandled request error:', err);
