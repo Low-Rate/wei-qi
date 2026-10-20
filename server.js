@@ -53,7 +53,7 @@ function sameBoard(a, b) { return a.every((row, y) => row.every((value, x) => va
 
 async function handler(req, res) {
  const url = new URL(req.url, `http://${req.headers.host}`);
- if (req.method === 'GET' && url.pathname === '/events') { const user = requireUser(req, res, url); if (!user) return; res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('event: connected\ndata: {}\n\n'); const client = { res, user }; clients.add(client); res.on('close', () => clients.delete(client)); return; }
+ if (req.method === 'GET' && url.pathname === '/events') { const user = requireUser(req, res, url); if (!user) return; res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('event: connected\ndata: {}\n\n'); const client = { res, user }; clients.add(client); client.expiryTimer = setTimeout(() => { clients.delete(client); if (!res.writableEnded) { res.write('event: auth-expired\\ndata: {}\\n\\n'); res.end(); } }, Math.max(0, user.exp - Date.now())); client.expiryTimer.unref(); res.on('close', () => { clients.delete(client); clearTimeout(client.expiryTimer); }); return; }
  if (req.method === 'POST' && url.pathname === '/api/auth/anonymous') { const input = await body(req); const nickname = String(input.nickname || '棋手').trim().slice(0, 30) || '棋手'; const user = { id: id('usr'), nickname, exp: Date.now() + 7 * 864e5 }; return json(res, 201, { token: sign(user), user: { id: user.id, nickname } }); }
  if (!url.pathname.startsWith('/api/')) return serveStatic(url.pathname, res);
  const user = requireUser(req, res, url); if (!user) return;
