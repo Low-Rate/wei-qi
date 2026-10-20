@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 process.env.DATA_FILE = '/tmp/wei-qi-test-rooms.json';
-const { handler, resetForTest } = require('../server');
+const { handler, handleRequestError, resetForTest } = require('../server');
 function request(server, method, pathname, token, body) { return new Promise((resolve, reject) => { const req = http.request({ port: server.address().port, method, path: pathname, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type':'application/json' } : {}) } }, res => { let raw=''; res.on('data', c=>raw+=c);res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(raw)})); });req.on('error',reject);if(body)req.end(JSON.stringify(body));else req.end(); }); }
 test('room approval atomically fills room and creates a session', async () => { resetForTest(); const server=http.createServer(handler); await new Promise(r=>server.listen(0,r)); try { const host=(await request(server,'POST','/api/auth/anonymous',null,{nickname:'房主'})).body.token; const guest=(await request(server,'POST','/api/auth/anonymous',null,{nickname:'客人'})).body.token; const room=(await request(server,'POST','/api/rooms',host,{title:'测试房',boardSize:9,timeSettings:{totalMinutes:20,moveSeconds:30}})).body.room; const app=(await request(server,'POST',`/api/rooms/${room.id}/applications`,guest,{})).body.application; const approved=await request(server,'POST',`/api/rooms/${room.id}/applications/${app.id}/approve`,host,{}); assert.equal(approved.status,200); assert.equal(approved.body.session.players.black.startsWith('usr_'),true); const again=await request(server,'POST',`/api/rooms/${room.id}/applications`,guest,{}); assert.equal(again.status,409); const intruder=(await request(server,'POST','/api/auth/anonymous',null,{nickname:'陌生人'})).body.token; const applications=await request(server,'GET',`/api/rooms/${room.id}/applications`,intruder); assert.equal(applications.status,403); } finally { await new Promise(r=>server.close(r)); } });
 
@@ -336,4 +336,41 @@ test('SSE connections close when their authentication token expires', async () =
   if (stream) stream.destroy();
   await new Promise(resolve => server.close(resolve));
  }
+});
+
+test('invalid JSON errors return a safe client error', () => {
+ const response = {
+  headersSent: false,
+  writeHead(status, headers) { this.status = status; this.headers = headers; },
+  end(body) { this.body = JSON.parse(body); }
+ };
+ handleRequestError(new Error('INVALID_JSON'), response);
+ assert.equal(response.status, 400);
+ assert.equal(response.body.error.code, 'INVALID_JSON');
+ assert.equal(response.body.error.message.includes('INVALID_JSON'), false);
+});
+
+test('unexpected request errors return a generic server error without leaking details', () => {
+ const response = {
+  headersSent: false,
+  writeHead(status, headers) { this.status = status; this.headers = headers; },
+  end(body) { this.body = JSON.parse(body); }
+ };
+ const originalError = console.error;
+ console.error = () => {};
+ try {
+  handleRequestError(new Error('secret filesystem path'), response);
+ } finally {
+  console.error = originalError;
+ }
+ assert.equal(response.status, 500);
+ assert.equal(response.body.error.code, 'INTERNAL_ERROR');
+ assert.equal(JSON.stringify(response.body).includes('secret filesystem path'), false);
+});
+
+test('request errors destroy responses that already sent headers', () => {
+ const expected = new Error('stream failure');
+ const response = { headersSent: true, destroy(err) { this.destroyedWith = err; } };
+ handleRequestError(expected, response);
+ assert.equal(response.destroyedWith, expected);
 });

@@ -92,5 +92,17 @@ const timeoutSweep = setInterval(() => {
  for (const session of Object.values(db.sessions)) persistTimeout(session);
 }, 1000);
 timeoutSweep.unref();
-if (require.main === module) http.createServer((req, res) => handler(req, res).catch(err => error(res, 400, err.message, '请求无法处理。'))).listen(PORT, () => console.log(`Wei Qi server listening on ${PORT}`));
-module.exports = { handler, resetForTest(data = { rooms: {}, sessions: {} }) { db = data; }, db };
+function handleRequestError(err, res) {
+ if (res.headersSent) {
+  res.destroy(err);
+  return;
+ }
+ if (err && err.message === 'INVALID_JSON') {
+  error(res, 400, 'INVALID_JSON', '请求内容必须是合法的 JSON。');
+  return;
+ }
+ console.error('Unhandled request error:', err);
+ error(res, 500, 'INTERNAL_ERROR', '服务器暂时无法处理请求。');
+}
+if (require.main === module) http.createServer((req, res) => handler(req, res).catch(err => handleRequestError(err, res))).listen(PORT, () => console.log(`Wei Qi server listening on ${PORT}`));
+module.exports = { handler, handleRequestError, resetForTest(data = { rooms: {}, sessions: {} }) { db = data; }, db };
