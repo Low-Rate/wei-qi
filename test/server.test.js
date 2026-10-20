@@ -3,6 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 process.env.DATA_FILE = '/tmp/wei-qi-test-rooms.json';
 const { handler, resetForTest } = require('../server');
 function request(server, method, pathname, token, body) { return new Promise((resolve, reject) => { const req = http.request({ port: server.address().port, method, path: pathname, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type':'application/json' } : {}) } }, res => { let raw=''; res.on('data', c=>raw+=c);res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(raw)})); });req.on('error',reject);if(body)req.end(JSON.stringify(body));else req.end(); }); }
@@ -205,6 +208,38 @@ test('SSE clients receive subsequent room-list events', async () => {
 });
 
 
+
+
+test('client returns to sign-in when token expires without an active SSE stream', async () => {
+ const elements = new Map();
+ const getElement = selector => {
+  if (!elements.has(selector)) elements.set(selector, {
+   hidden: false, textContent: '', disabled: false, onclick: null, onsubmit: null,
+   replaceChildren() {}, append() {}, addEventListener() {},
+   getContext() { return {}; }
+  });
+  return elements.get(selector);
+ };
+ const storage = new Map();
+ const context = vm.createContext({
+  document: { querySelector: getElement },
+  sessionStorage: {
+   getItem: key => storage.get(key) ?? null,
+   setItem: (key, value) => storage.set(key, value),
+   removeItem: key => storage.delete(key)
+  },
+  atob, TextDecoder, Uint8Array, setTimeout, clearTimeout, Date, Math, JSON, console
+ });
+ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+ vm.runInContext(source, context, { filename: 'app.js' });
+ const payload = Buffer.from(JSON.stringify({ id: 'usr_client_expiry', nickname: '过期用户', exp: Date.now() + 80 })).toString('base64url');
+ vm.runInContext(`token = ${JSON.stringify(payload + '.signature')}; sessionStorage.setItem('weiqi-token', token); scheduleAuthExpiry();`, context);
+ await new Promise(resolve => setTimeout(resolve, 180));
+ assert.equal(storage.has('weiqi-token'), false);
+ assert.equal(getElement('#identity').hidden, false);
+ assert.equal(getElement('#lobby').hidden, true);
+ assert.equal(getElement('#status').textContent, '登录已过期，请重新登录。');
+});
 
 test('an expired SSE token is rejected when reconnecting after disconnect', async () => {
  resetForTest();
