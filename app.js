@@ -1,7 +1,26 @@
 const canvas = document.querySelector('#board'), ctx = canvas.getContext('2d');
 const statusEl = document.querySelector('#status'), roomList = document.querySelector('#room-list'), appsEl = document.querySelector('#applications');
 const game = { sessionId: null, color: null, boardSize: 19, state: null, timer: null, players: null };
-let token = sessionStorage.getItem('weiqi-token'), stream;
+let token = sessionStorage.getItem('weiqi-token'), stream, authExpiryTimer;
+function tokenExpiry(tokenValue) {
+ try {
+  const encoded = tokenValue.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+  const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+  const payload = JSON.parse(new TextDecoder().decode(bytes));
+  return Number.isFinite(payload.exp) ? payload.exp : null;
+ } catch { return null; }
+}
+function scheduleAuthExpiry() {
+ clearTimeout(authExpiryTimer);
+ const expiry = tokenExpiry(token);
+ if (expiry === null) return;
+ const remaining = expiry - Date.now();
+ if (remaining <= 0) { handleAuthExpired(); return; }
+ authExpiryTimer = setTimeout(() => {
+  if (Date.now() >= expiry) handleAuthExpired();
+  else scheduleAuthExpiry();
+ }, Math.min(remaining, 2147483647));
+}
 const $ = (s) => document.querySelector(s);
 function message(text, target = statusEl) { target.textContent = text; }
 async function jsonResponse(response) {
@@ -11,7 +30,7 @@ async function jsonResponse(response) {
   try { data = JSON.parse(text); }
   catch { throw new Error('服务器返回了无法读取的数据，请稍后重试。'); }
  }
- if (!response.ok) throw new Error(data?.error?.message || `请求失败（${response.status}）。`);
+ if (!response.ok) { const error = new Error(data?.error?.message || `请求失败（${response.status}）。`); error.status = response.status; throw error; }
  if (data === null) throw new Error('服务器未返回预期的数据，请稍后重试。');
  return data;
 }
@@ -30,12 +49,13 @@ function applyMove(board,x,y,color){if(board[y][x]!==0)return false;board[y][x]=
 async function restoreSessions(){const {sessions}=await api('/api/sessions');if(!sessions.length)return;renderGame(sessions[0].session,sessions[0].color);}
 async function loadApplications(roomId) { try { const { applications }=await api(`/api/rooms/${roomId}/applications`); $('#owner-applications').hidden=false; appsEl.replaceChildren(...applications.map(a=>{const el=document.createElement('div');el.textContent=`${a.nickname} `; for(const action of ['approve','reject']){const b=document.createElement('button');b.textContent=action==='approve'?'同意':'拒绝';b.onclick=()=>handleApplication(roomId,a.id,action);el.append(b);}return el;})); } catch(e) { message(e.message); } }
 async function handleApplication(roomId, appId, action) { try { const result=await api(`/api/rooms/${roomId}/applications/${appId}/${action}`,{method:'POST',body:'{}'}); if(action==='approve') { renderGame(result.session, 1); $('#owner-applications').hidden=true; } else loadApplications(roomId); } catch(e){message(e.message);} }
-function connectEvents() { if(stream) stream.close(); stream=new EventSource(`/events?token=${encodeURIComponent(token)}`); stream.onopen=()=>$('#connection-status').textContent='实时连接已建立'; stream.onerror=()=>$('#connection-status').textContent='实时连接断开，正在重连…'; stream.addEventListener('room-list-changed',()=>loadRooms().catch(e=>message(e.message))); stream.addEventListener('application-arrived',e=>{const d=JSON.parse(e.data);message('收到新的加入申请。');loadApplications(d.roomId);}); stream.addEventListener('application-approved',e=>{const d=JSON.parse(e.data); api(`/api/sessions/${d.session.id}`).then(r=>renderGame(r.session,r.color));}); stream.addEventListener('application-rejected',()=>message('你的申请被拒绝，房间仍在招募中。',$('#lobby-status')));
+function handleAuthExpired(){clearTimeout(authExpiryTimer);authExpiryTimer=null;if(stream){stream.close();stream=null;}token=null;sessionStorage.removeItem('weiqi-token');$('#identity').hidden=false;$('#lobby').hidden=true;message('登录已过期，请重新登录。');}
+function connectEvents() { scheduleAuthExpiry(); if(!token) return; if(stream) stream.close(); stream=new EventSource(`/events?token=${encodeURIComponent(token)}`); stream.onopen=()=>$('#connection-status').textContent='实时连接已建立'; stream.onerror=()=>$('#connection-status').textContent='实时连接断开，正在重连…'; stream.addEventListener('auth-expired',handleAuthExpired); stream.addEventListener('room-list-changed',()=>loadRooms().catch(e=>message(e.message))); stream.addEventListener('application-arrived',e=>{const d=JSON.parse(e.data);message('收到新的加入申请。');loadApplications(d.roomId);}); stream.addEventListener('application-approved',e=>{const d=JSON.parse(e.data); api(`/api/sessions/${d.session.id}`).then(r=>renderGame(r.session,r.color));}); stream.addEventListener('application-rejected',()=>message('你的申请被拒绝，房间仍在招募中。',$('#lobby-status')));
  stream.addEventListener('game-state',e=>{const d=JSON.parse(e.data);if(d.session.id===game.sessionId) renderGame(d.session);}); }
 $('#sign-in').onclick=async()=>{try{const d=await jsonResponse(await fetch('/api/auth/anonymous',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nickname:$('#nickname').value})}));token=d.token;sessionStorage.setItem('weiqi-token',token);$('#identity').hidden=true;$('#lobby').hidden=false;connectEvents();loadRooms();restoreSessions().catch(e=>message(e.message));}catch(e){message(e.message);}};
 $('#create-room-form').onsubmit=async e=>{e.preventDefault();try{const room=(await api('/api/rooms',{method:'POST',body:JSON.stringify({title:$('#room-title').value,introduction:$('#room-introduction').value,boardSize:Number($('#board-size').value),timeSettings:{totalMinutes:Number($('#game-minutes').value),moveSeconds:Number($('#move-seconds').value)}})})).room;message(`房间已创建，正在招募：${room.title}`,$('#lobby-status'));loadApplications(room.id);}catch(err){message(err.message,$('#lobby-status'));}};
 canvas.onclick=async e=>{if(!game.state||game.state.finished)return;if(game.state.current!==game.color)return message('尚未轮到你落子。');const rect=canvas.getBoundingClientRect(),pad=20,cell=(canvas.width-pad*2)/(game.boardSize-1),scaleX=canvas.width/rect.width,scaleY=canvas.height/rect.height,x=Math.round(((e.clientX-rect.left)*scaleX-pad)/cell),y=Math.round(((e.clientY-rect.top)*scaleY-pad)/cell);if(x<0||y<0||x>=game.boardSize||y>=game.boardSize||game.state.board[y][x])return message('该位置不能落子。');const state=structuredClone(game.state);if(!applyMove(state.board,x,y,game.color))return message('该位置是禁入点。');state.current=game.color===1?2:1;state.passes=0;try{await api(`/api/sessions/${game.sessionId}/state`,{method:'PUT',body:JSON.stringify({state})});}catch(err){message(err.message);}};
 $('#pass').onclick=async()=>{if(!game.state||game.state.current!==game.color)return;const state=structuredClone(game.state);state.current=game.color===1?2:1;state.passes++;try{await api(`/api/sessions/${game.sessionId}/state`,{method:'PUT',body:JSON.stringify({state})});}catch(e){message(e.message);}};
-if(token){$('#identity').hidden=true;$('#lobby').hidden=false;connectEvents();loadRooms().catch(()=>sessionStorage.removeItem('weiqi-token'));restoreSessions().catch(()=>sessionStorage.removeItem('weiqi-token')); }
+if(token){$('#identity').hidden=true;$('#lobby').hidden=false;connectEvents();loadRooms().catch(e=>{if(e.status===401)handleAuthExpired();else message(e.message,$('#lobby-status'));});restoreSessions().catch(e=>{if(e.status===401)handleAuthExpired();else message(e.message);}); }
 
 $('#resign').onclick=async()=>{if(!game.sessionId||!game.state||game.state.finished)return;if(!confirm('确定认输并结束本局对战吗？'))return;try{const result=await api(`/api/sessions/${game.sessionId}/resign`,{method:'POST',body:'{}'});renderGame(result.session,game.color);}catch(e){message(e.message);}};

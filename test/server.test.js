@@ -2,6 +2,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 process.env.DATA_FILE = '/tmp/wei-qi-test-rooms.json';
 const { handler, resetForTest } = require('../server');
 function request(server, method, pathname, token, body) { return new Promise((resolve, reject) => { const req = http.request({ port: server.address().port, method, path: pathname, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type':'application/json' } : {}) } }, res => { let raw=''; res.on('data', c=>raw+=c);res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(raw)})); });req.on('error',reject);if(body)req.end(JSON.stringify(body));else req.end(); }); }
@@ -197,6 +201,137 @@ test('SSE clients receive subsequent room-list events', async () => {
    const check = () => { if (received.includes('event: room-list-changed')) return resolve(); if (Date.now() - started > 1000) return reject(new Error('SSE event was not received')); setTimeout(check, 25); };
    check();
   });
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+
+
+
+test('client returns to sign-in when token expires without an active SSE stream', async () => {
+ const elements = new Map();
+ const getElement = selector => {
+  if (!elements.has(selector)) elements.set(selector, {
+   hidden: false, textContent: '', disabled: false, onclick: null, onsubmit: null,
+   replaceChildren() {}, append() {}, addEventListener() {},
+   getContext() { return {}; }
+  });
+  return elements.get(selector);
+ };
+ const storage = new Map();
+ const context = vm.createContext({
+  document: { querySelector: getElement },
+  sessionStorage: {
+   getItem: key => storage.get(key) ?? null,
+   setItem: (key, value) => storage.set(key, value),
+   removeItem: key => storage.delete(key)
+  },
+  atob, TextDecoder, Uint8Array, setTimeout, clearTimeout, Date, Math, JSON, console
+ });
+ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+ vm.runInContext(source, context, { filename: 'app.js' });
+ const payload = Buffer.from(JSON.stringify({ id: 'usr_client_expiry', nickname: '过期用户', exp: Date.now() + 300 })).toString('base64url');
+ vm.runInContext("token = " + JSON.stringify(payload + '.signature') + "; sessionStorage.setItem('weiqi-token', token); scheduleAuthExpiry();", context);
+ await new Promise(resolve => setTimeout(resolve, 450));
+ assert.equal(storage.has('weiqi-token'), false);
+ assert.equal(getElement('#identity').hidden, false);
+ assert.equal(getElement('#lobby').hidden, true);
+ assert.equal(getElement('#status').textContent, '登录已过期，请重新登录。');
+});
+
+
+test('client does not open SSE with an already-expired stored token', async () => {
+ const elements = new Map();
+ const getElement = selector => {
+  if (!elements.has(selector)) elements.set(selector, {
+   hidden: false, textContent: '', disabled: false, onclick: null, onsubmit: null,
+   replaceChildren() {}, append() {}, addEventListener() {},
+   getContext() { return {}; }
+  });
+  return elements.get(selector);
+ };
+ const storage = new Map();
+ let openedStreams = 0;
+ const context = vm.createContext({
+  document: { querySelector: getElement },
+  sessionStorage: {
+   getItem: key => storage.get(key) ?? null,
+   setItem: (key, value) => storage.set(key, value),
+   removeItem: key => storage.delete(key)
+  },
+  EventSource: function () { openedStreams++; this.close = () => {}; this.addEventListener = () => {}; },
+  atob, TextDecoder, Uint8Array, setTimeout, clearTimeout, Date, Math, JSON, console
+ });
+ const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+ vm.runInContext(source, context, { filename: 'app.js' });
+ const payload = Buffer.from(JSON.stringify({ id: 'usr_already_expired', nickname: '过期用户', exp: Date.now() - 100 })).toString('base64url');
+ vm.runInContext("token = " + JSON.stringify(payload + '.signature') + "; sessionStorage.setItem('weiqi-token', token); connectEvents();", context);
+ assert.equal(openedStreams, 0);
+ assert.equal(storage.has('weiqi-token'), false);
+ assert.equal(getElement('#identity').hidden, false);
+ assert.equal(getElement('#lobby').hidden, true);
+});
+
+test('an expired SSE token is rejected when reconnecting after disconnect', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const user = { id: 'usr_reconnect_expired', nickname: '断线重连测试', exp: Date.now() + 250 };
+  const body = Buffer.from(JSON.stringify(user)).toString('base64url');
+  const secret = process.env.AUTH_SECRET || 'replace-this-development-secret';
+  const signature = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+  const token = body + '.' + signature;
+  let received = '';
+  await new Promise((resolve, reject) => {
+   const timeout = setTimeout(() => reject(new Error('SSE connection did not open')), 1000);
+   stream = http.get({ port: server.address().port, path: '/events?token=' + encodeURIComponent(token) }, response => {
+    response.setEncoding('utf8');
+    response.on('data', chunk => {
+     received += chunk;
+     if (received.includes('event: connected')) { clearTimeout(timeout); resolve(); }
+    });
+   });
+   stream.on('error', err => { clearTimeout(timeout); reject(err); });
+  });
+  stream.destroy();
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, user.exp - Date.now() + 25)));
+  const reconnect = await request(server, 'GET', '/events?token=' + encodeURIComponent(token));
+  assert.equal(reconnect.status, 401);
+  assert.equal(reconnect.body.error.code, 'UNAUTHENTICATED');
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+test('SSE connections close when their authentication token expires', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const user = { id: 'usr_expiring', nickname: '过期测试', exp: Date.now() + 150 };
+  const body = Buffer.from(JSON.stringify(user)).toString('base64url');
+  const secret = process.env.AUTH_SECRET || 'replace-this-development-secret';
+  const signature = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+  const token = body + '.' + signature;
+  let received = '';
+  const ended = new Promise((resolve, reject) => {
+   const timeout = setTimeout(() => reject(new Error('SSE connection stayed open after token expiry')), 1500);
+   stream = http.get({ port: server.address().port, path: '/events?token=' + encodeURIComponent(token) }, response => {
+    response.setEncoding('utf8');
+    response.on('data', chunk => { received += chunk; });
+    response.on('end', () => { clearTimeout(timeout); resolve(); });
+   });
+   stream.on('error', err => { clearTimeout(timeout); reject(err); });
+  });
+  await ended;
+  assert.match(received, /event: connected/);
+  assert.match(received, /event: auth-expired/);
  } finally {
   if (stream) stream.destroy();
   await new Promise(resolve => server.close(resolve));
