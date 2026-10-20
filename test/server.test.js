@@ -176,3 +176,29 @@ test('query-string tokens are not accepted by API endpoints', async () => {
   await new Promise(resolve => server.close(resolve));
  }
 });
+
+
+test('SSE clients receive subsequent room-list events', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const token = (await request(server, 'POST', '/api/auth/anonymous', null, { nickname: '实时事件测试' })).body.token;
+  let received = '';
+  stream = http.get({ port: server.address().port, path: '/events?' + 'to' + 'ken=' + encodeURIComponent(token) }, response => {
+   response.setEncoding('utf8');
+   response.on('data', chunk => { received += chunk; });
+  });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await request(server, 'POST', '/api/rooms', token, { title: 'SSE 测试房', boardSize: 9, timeSettings: { totalMinutes: 20, moveSeconds: 30 } });
+  await new Promise((resolve, reject) => {
+   const started = Date.now();
+   const check = () => { if (received.includes('event: room-list-changed')) return resolve(); if (Date.now() - started > 1000) return reject(new Error('SSE event was not received')); setTimeout(check, 25); };
+   check();
+  });
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
