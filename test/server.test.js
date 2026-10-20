@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const crypto = require('node:crypto');
 process.env.DATA_FILE = '/tmp/wei-qi-test-rooms.json';
 const { handler, resetForTest } = require('../server');
 function request(server, method, pathname, token, body) { return new Promise((resolve, reject) => { const req = http.request({ port: server.address().port, method, path: pathname, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type':'application/json' } : {}) } }, res => { let raw=''; res.on('data', c=>raw+=c);res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(raw)})); });req.on('error',reject);if(body)req.end(JSON.stringify(body));else req.end(); }); }
@@ -197,6 +198,37 @@ test('SSE clients receive subsequent room-list events', async () => {
    const check = () => { if (received.includes('event: room-list-changed')) return resolve(); if (Date.now() - started > 1000) return reject(new Error('SSE event was not received')); setTimeout(check, 25); };
    check();
   });
+ } finally {
+  if (stream) stream.destroy();
+  await new Promise(resolve => server.close(resolve));
+ }
+});
+
+
+test('SSE connections close when their authentication token expires', async () => {
+ resetForTest();
+ const server = http.createServer(handler);
+ await new Promise(resolve => server.listen(0, resolve));
+ let stream;
+ try {
+  const user = { id: 'usr_expiring', nickname: '过期测试', exp: Date.now() + 150 };
+  const body = Buffer.from(JSON.stringify(user)).toString('base64url');
+  const secret = process.env.AUTH_SECRET || 'replace-this-development-secret';
+  const signature = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+  const token = body + '.' + signature;
+  let received = '';
+  const ended = new Promise((resolve, reject) => {
+   const timeout = setTimeout(() => reject(new Error('SSE connection stayed open after token expiry')), 1500);
+   stream = http.get({ port: server.address().port, path: '/events?token=' + encodeURIComponent(token) }, response => {
+    response.setEncoding('utf8');
+    response.on('data', chunk => { received += chunk; });
+    response.on('end', () => { clearTimeout(timeout); resolve(); });
+   });
+   stream.on('error', err => { clearTimeout(timeout); reject(err); });
+  });
+  await ended;
+  assert.match(received, /event: connected/);
+  assert.match(received, /event: auth-expired/);
  } finally {
   if (stream) stream.destroy();
   await new Promise(resolve => server.close(resolve));
